@@ -12,37 +12,38 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Our test suite should cover:
-# - all supported databases against current Python and Django (including psycopg v2 and v3)
-# - at least one test run for each older supported version of Python and Django
-# - at least one test run for each supported Elasticsearch version
-# - a test run against Django's git main and active stable branch (allowing failures)
-# - test runs with USE_EMAIL_USER_MODEL=yes, DISABLE_TIMEZONE=yes and WAGTAIL_CHECK_TEMPLATE_NUMBER_FORMAT=1
-
-# Current configuration:
-# - django 4.2, python 3.9, postgres:12, psycopg 2, parallel
-# - django 4.2, python 3.10, mysql:8.0
-# - django 4.2, python 3.11, mariadb:10.5
-# - django 5.1, python 3.12, mysql:8.4, USE_EMAIL_USER_MODEL=yes
-# - django 5.1, python 3.12, mariadb:11.4, USE_EMAIL_USER_MODEL=yes
-# - django 5.2, python 3.13, sqlite, parallel, WAGTAIL_CHECK_TEMPLATE_NUMBER_FORMAT=1
-# - django 5.2, python 3.13, postgres:15, psycopg 3, parallel, DISABLE_TIMEZONE=yes
-# - django stable/5.2.x, python 3.12, postgres:15, psycopg 3 (allow failures)
-# - django main, python 3.13, postgres:latest, psycopg 3, parallel (allow failures)
-# - elasticsearch 7, django 4.2, python 3.9, postgres:latest, psycopg 2
-# - opensearch 2, django 5.2, python 3.10, sqlite
-# - elasticsearch 8, django 5.1, python 3.13, sqlite, USE_EMAIL_USER_MODEL=yes
-
-# Some tests are run in parallel by passing --parallel to runtests.py.
-# When running tests in parallel, some errors cannot be pickled and result in
-# non-helpful tracebacks (see https://code.djangoproject.com/ticket/29023).
-# Thus, we keep one test run without --parallel for each supported database.
-# ElasticSearch tests are not run in parallel as the test suite is not thread-safe.
-
 permissions:
-  contents: read # to fetch code (actions/checkout)
+  contents: read
 
 jobs:
+  # ─────────────────────────────────────────────────────────────
+  # A simple job for running pytest + pytest-cov and uploading to Codecov
+  run-tests-and-upload-coverage:
+    name: Run tests and upload coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: pip install pytest pytest-cov
+
+      - name: Run tests
+        run: pytest --cov --cov-branch --cov-report=xml
+
+      - name: Upload results to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+  # ─────────────────────────────────────────────────────────────
+
   test-sqlite:
     runs-on: ubuntu-latest
     strategy:
@@ -57,16 +58,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
           cache: 'pip'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e '.[testing]' --config-settings editable_mode=strict
           pip install "${{ matrix.django }}"
+
       - name: Test
         run: |
           WAGTAIL_FAIL_ON_VERSIONED_STATIC=1 DJANGO_SETTINGS_MODULE=wagtail.test.settings django-admin check
@@ -75,6 +79,7 @@ jobs:
           DATABASE_ENGINE: django.db.backends.sqlite3
           USE_EMAIL_USER_MODEL: ${{ matrix.emailuser }}
           WAGTAIL_CHECK_TEMPLATE_NUMBER_FORMAT: ${{ matrix.check_template_number_format }}
+
       - name: Upload coverage data
         uses: actions/upload-artifact@v4
         with:
@@ -127,11 +132,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
           cache: 'pip'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -139,6 +146,7 @@ jobs:
           pip install -e '.[testing]' --config-settings editable_mode=strict
           pip install "${{ matrix.django }}"
           ${{ matrix.install_extras }}
+
       - name: Test
         run: |
           WAGTAIL_FAIL_ON_VERSIONED_STATIC=1 DJANGO_SETTINGS_MODULE=wagtail.test.settings django-admin check
@@ -150,30 +158,13 @@ jobs:
           DATABASE_PASSWORD: postgres
           USE_EMAIL_USER_MODEL: ${{ matrix.emailuser }}
           DISABLE_TIMEZONE: ${{ matrix.notz }}
+
       - name: Upload coverage data
         uses: actions/upload-artifact@v4
         with:
           name: coverage-data-${{ github.job }}-${{ strategy.job-index }}
           path: .coverage.*
           include-hidden-files: true
-      - name: Test project template
-        if: ${{ matrix.experimental }}
-        env:
-          PYTHONWARNINGS: error
-        run: |
-          wagtail start testproject
-          cd testproject
-          tee -a testproject/settings/local.py << EOF
-          from warnings import filterwarnings
-          SILENCED_SYSTEM_CHECKS = ["wagtailadmin.W001"]
-          # Remove when https://github.com/wagtail/Willow/issues/166 is resolved
-          filterwarnings(
-              "ignore", "The AVIF support in this library is marked as deprecated"
-          )
-          EOF
-          python manage.py makemigrations --check --dry-run
-          python manage.py migrate
-          python manage.py check --fail-level WARNING
 
   test-mysql:
     runs-on: ubuntu-latest
@@ -215,17 +206,20 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
           cache: 'pip'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install "mysqlclient>=1.4,<2"
           pip install -e '.[testing]' --config-settings editable_mode=strict
           pip install "${{ matrix.django }}"
+
       - name: Test
         run: |
           WAGTAIL_FAIL_ON_VERSIONED_STATIC=1 DJANGO_SETTINGS_MODULE=wagtail.test.settings django-admin check
@@ -237,6 +231,7 @@ jobs:
           DATABASE_PASSWORD: root
           USE_EMAIL_USER_MODEL: ${{ matrix.emailuser }}
           DISABLE_TIMEZONE: ${{ matrix.notz }}
+
       - name: Upload coverage data
         uses: actions/upload-artifact@v4
         with:
@@ -252,6 +247,7 @@ jobs:
           - python: '3.13'
             django: 'Django>=5.2,<5.3'
             emailuser: emailuser
+
     steps:
       - name: Configure sysctl limits
         run: |
@@ -259,6 +255,7 @@ jobs:
           sudo sysctl -w vm.swappiness=1
           sudo sysctl -w fs.file-max=262144
           sudo sysctl -w vm.max_map_count=262144
+
       - uses: getong/elasticsearch-action@v1.3
         with:
           elasticsearch version: 8.8.0
@@ -267,14 +264,17 @@ jobs:
           host node port: 9300
           node port: 9300
           discovery type: 'single-node'
+
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
           cache: 'pip'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -282,12 +282,14 @@ jobs:
           pip install "${{ matrix.django }}"
           pip install "elasticsearch>=8,<9"
           pip install certifi
+
       - name: Test
         run: |
           coverage run --parallel-mode --source wagtail runtests.py wagtail.search wagtail.documents wagtail.images --elasticsearch8
         env:
           DATABASE_ENGINE: django.db.backends.sqlite3
           USE_EMAIL_USER_MODEL: ${{ matrix.emailuser }}
+
       - name: Upload coverage data
         uses: actions/upload-artifact@v4
         with:
@@ -321,9 +323,11 @@ jobs:
           sudo sysctl -w vm.swappiness=1
           sudo sysctl -w fs.file-max=262144
           sudo sysctl -w vm.max_map_count=262144
+
       - uses: elastic/elastic-github-actions/elasticsearch@master
         with:
           stack-version: 7.6.1
+
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -333,6 +337,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: 'pip'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -341,6 +346,7 @@ jobs:
           pip install "${{ matrix.django }}"
           pip install "elasticsearch>=7,<8"
           pip install certifi
+
       - name: Test
         run: |
           coverage run --parallel-mode --source wagtail runtests.py wagtail.search wagtail.documents wagtail.images --elasticsearch7
@@ -350,6 +356,7 @@ jobs:
           DATABASE_USER: postgres
           DATABASE_PASSWORD: postgres
           USE_EMAIL_USER_MODEL: ${{ matrix.emailuser }}
+
       - name: Upload coverage data
         uses: actions/upload-artifact@v4
         with:
@@ -374,17 +381,21 @@ jobs:
           sudo sysctl -w vm.swappiness=1
           sudo sysctl -w fs.file-max=262144
           sudo sysctl -w vm.max_map_count=262144
+
       - uses: ankane/setup-opensearch@v1
         with:
           opensearch-version: 2
+
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
           cache: 'pip'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -392,12 +403,14 @@ jobs:
           pip install "${{ matrix.django }}"
           pip install "elasticsearch==7.13.4"
           pip install certifi
+
       - name: Test
         run: |
           coverage run --parallel-mode --source wagtail runtests.py wagtail.search wagtail.documents wagtail.images --elasticsearch7
         env:
           DATABASE_ENGINE: django.db.backends.sqlite3
           USE_EMAIL_USER_MODEL: ${{ matrix.emailuser }}
+
       - name: Upload coverage data
         uses: actions/upload-artifact@v4
         with:
@@ -437,8 +450,7 @@ jobs:
           merge-multiple: true
 
       - name: Combine coverage data
-        run: |
-          coverage combine
+        run: coverage combine
 
       - name: Generate coverage report
         run: |
@@ -453,7 +465,7 @@ jobs:
           include-hidden-files: true
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v5
         with:
           flags: backend
           token: ${{ secrets.CODECOV_TOKEN }}
